@@ -1,6 +1,10 @@
 # DMRG code to find the ground state of quantum systems using a variational method
 # Based on the methods in chapter 6 of this paper: https://arxiv.org/pdf/1008.3477.pdf
 
+# TODO: test everything.
+# TODO: Make sure all the indices are right. Especially with Ldict and Rdict
+# TODO: Determine whento use svd and when to use reduce_rank_svd
+
 import numpy as np
 
 class MPS():
@@ -44,8 +48,14 @@ class MPS():
         Multiply s and v into the next tensor. Repeat to right normalize
         the entire MPS.
         '''
-        # TODO: Fix indices for the end
-        for i in range(self.mps.shape[0]-1, 1, -1):
+        l = self.mps.shape[0]
+        right = self.mps[l-1]
+        u, s, v = self.reduce_rank_svd(right)
+        self.mps[l-1] = u
+        self.mps[l-2] = np.einsum('uxl, Rx -> uRl', self.mps[l-2], v)
+        self.mps[l-2] = np.einsum('uxl, Rx -> uRl', self.mps[l-2], s)
+
+        for i in range(self.mps.shape[0]-2, 1, -1):
             right = self.mps[i] # Get tensor
             sh = right.shape
             right = np.reshape(right, [sh[0]*sh[1], sh[2]]) # reshape u and r into one dimension for svd
@@ -58,13 +68,20 @@ class MPS():
 
             self.mps[i-1] = np.einsum('uxl, Rx -> uRl', self.mps[i-1], v)
             self.mps[i-1] = np.einsum('uxl, Rx -> uRl', self.mps[i-1], s)
-        # TODO: Fix indices
 
     def leftNormalize(self, index):
         '''
         Left normalize the MPS starting at index and working to the right.
         '''
         # TODO: Fix indices, currently can't left sweep!
+        if (index == 0):
+            left = self.mps[0]
+            u, s, v = self.reduce_rank_svd(left)
+            self.mps[0] = u
+            self.mps[1] = np.einsum('xL,urx -> urL', v, self.mps[1])
+            self.mps[1] = np.einsum('xL,urx -> urL', s, self.mps[1])
+            return
+
         for i in range(index, self.mps.shape[0]-1):
             left = self.mps[i]
             sh = right.shape
@@ -80,11 +97,15 @@ class MPS():
 
             self.mps[i+1] = np.einsum('xL,urx -> urL', v, self.mps[i+1])
             self.mps[i+1] = np.einsum('xL,urx -> urL', s, self.mps[i+1])
+            return
 
 class MPO(MPS):
-    pass
+    def rightNormalize(self):
+        pass
+    def leftNormalize(self):
+        pass
 
-class Solver():
+class Network():
     '''
     Variational ground state solver with initial guess of state and given
     operator in Matrix Product Operator (MPO) form.
@@ -147,7 +168,7 @@ class Solver():
         matrix = np.reshape(matrix, [sh[0]*sh[1]*sh[2], sh[3]*sh[4]*sh[5]])
         return matrix
 
-    def standardEigen(self, tensor):
+    def davidson(self, tensor):
         '''
         Solve tensor1*tensor2 - \lambda * tensor2 = 0 for the smallest
         eigenvalue/eigentensor pair.
@@ -161,7 +182,6 @@ class Solver():
         m = np.amin(e)
         v = v[np.where(e == m)]
         return (m, v)
-
 
     def contract(self):
         '''
@@ -180,27 +200,63 @@ class Solver():
         Find the minimum of <\psi|O|\psi> for operator O.
         Returns (wavefunction, energy) tuple
         '''
+        # TODO: Left normalize in the right places
+        R_Builder()
         for i in range(num):
             # Right sweep
-            # TODO: Implement left edge case for right sweep
+            tensor = findMatrix(0)
+            eigen = davidson(tensor)
+            sh = self.state[j].shape
+            eigen[1] = np.reshape(eigen[1], [sh[0], sh[1]])
+            self.state[0] = eigen[1]
+            L = self.state[0]
+            L = np.einsum('xr,URx->URr', L, self.operator[0])
+            L = np.einsum('xRr,xi->rRi') # Now indexed bottom, middle, top
+            self.Ldict[1] = L
 
-            for j in range(0, self.state.shape[0]-1):
+            for j in range(1, self.state.shape[0]-2):
                 tensor = findMatrix(j)
-                eigen = standardEigen(tensor)
+                eigen = davidson(tensor)
                 sh = self.state[j].shape
                 eigen[1] = np.reshape(eigen[1], [sh[0], sh[1], sh[2]])
-                self.state[j] =
-                # TODO: Implement this and add to Ldict
+                self.state[j] = eigen[1]
 
-            # TODO: Implement right edge case for right sweep
+                Ltemp = np.einsum('xrl,URxL->URrlL', self.state[j], self.operator[i])
+                Ltemp = np.einsum('xRrlL,xij->ijRrlL', Ltemp, self.state[j])
+                L = np.einsum('ijRrlL,lLi->rRj', Ltemp, L)
+                self.Ldict[j+1] = L
 
-            # TODO: Implement right edge case for left sweep
+            index = self.state.shape[0]-1
+            tensor = findMatrix(index)
+            eigen = davidson(tensor)
+            sh = self.state[index].shape
+            eigen[1] = np.reshape(eigen[1], [sh[0], sh[1]])
+            self.state[index] = eigen[1]
+
+            last = self.state[index]
+            R = np.einsum('xl,UxL -> UlL', last, self.operator[index])
+            R = np.einsum('xlL,xi -> lLi', R, last)
+            # Now R is indexed bottomleft, middleleft, topleft = lLi
+            self.Rdict[index-1] = R # might need to copy R, as it might put a pointer to R there
 
             # Left sweep
-            for j in range(self.state.shape[0]-1, 0, -1):
+            for j in range(self.state.shape[0]-2, 1, -1):
                 tensor = findMatrix(j)
-                self.state[j] = standardEigen(tensor)
+                eigen = davidson(tensor)
+                sh = self.state[j].shape
+                eigen[1] = np.reshape(eigen[1], [sh[0], sh[1], sh[2]])
+                self.state[j] = eigen[1]
 
-            # TODO: Implement left edge case for left sweep
+                Rtemp = np.einsum('xrl,URxL->URrlL', self.state[j], self.operator[i])
+                Rtemp = np.einsum('xRrlL,xij->ijRrlL', Rtemp, self.state[j])
+                R = np.einsum('ijRrlL,rRj->lLi', Rtemp, R)
+                self.Rdict[j-1] = R
+
+            index = 0
+            tensor = findMatrix(index)
+            eigen = davidson(tensor)
+            sh = self.state[index].shape
+            eigen[1] = np.reshape(eigen[1], [sh[0], sh[1]])
+            self.state[index] = eigen[1]
 
         return (self.state, contract())
