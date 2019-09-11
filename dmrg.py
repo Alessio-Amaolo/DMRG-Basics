@@ -1,6 +1,3 @@
-# DMRG code to find the ground state of quantum systems using a variational method
-# Based on the methods in chapter 6 of this paper: https://arxiv.org/pdf/1008.3477.pdf
-
 # TODO: test everything.
 # TODO: Determine whento use svd and when to use reduce_rank_svd
 
@@ -256,7 +253,7 @@ class Network():
         self.state.rightNormalize()
 
         # Step 2: Calculate the R expressions iteratively
-        R_Builder()
+        self.R_Builder()
 
         for i in range(num):
             # Step 3: Right sweep
@@ -318,3 +315,23 @@ class Network():
             # Step 5: Repeat sweeps until done
 
         return (self.state, self.contract())
+
+
+def FullTest():
+    # Generate an example MPS
+    # Test MPS code and verify everything is working.
+    # Good test: right normalize and make sure full contraction = 1
+
+    # Make sure right and left normalization works
+    # Make sure total right normalization works
+    # Make sure replacing and getting works. Otherwise write a function.
+
+    # Pass the MPS with a sample MPO to the Network class.
+    # Test contraction with identity MPO
+    # Test that the R builder works correctly via full contraction with identity MPO
+    # Test that replacement is working correctly
+    # Ensure davidson is working by passing very basic matrices and seeing them by hand
+    # Test solve() very carefully
+    pass
+
+FullTest()
