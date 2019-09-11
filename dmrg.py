@@ -2,7 +2,6 @@
 # Based on the methods in chapter 6 of this paper: https://arxiv.org/pdf/1008.3477.pdf
 
 # TODO: test everything.
-# TODO: Make sure all the indices are right. Especially with Ldict and Rdict
 # TODO: Determine whento use svd and when to use reduce_rank_svd
 
 import numpy as np
@@ -27,9 +26,10 @@ class MPS():
         else:
             self.mps = input
         self.chi = chi
+        self.length = self.mps.shape[0]
 
     def get(self):
-        return(self.mps[0])
+        return(self.mps)
 
     def reduce_rank_svd(self, mat):
         '''
@@ -48,14 +48,14 @@ class MPS():
         Multiply s and v into the next tensor. Repeat to right normalize
         the entire MPS.
         '''
-        l = self.mps.shape[0]
-        right = self.mps[l-1]
+        l = self.mps.shape[0]-1
+        right = self.mps[l]
         u, s, v = self.reduce_rank_svd(right)
-        self.mps[l-1] = u
-        self.mps[l-2] = np.einsum('uxl, Rx -> uRl', self.mps[l-2], v)
-        self.mps[l-2] = np.einsum('uxl, Rx -> uRl', self.mps[l-2], s)
+        self.mps[l] = u
+        self.mps[l-1] = np.einsum('uxl, Rx -> uRl', self.mps[l-2], v)
+        self.mps[l-1] = np.einsum('uxl, Rx -> uRl', self.mps[l-2], s)
 
-        for i in range(self.mps.shape[0]-2, 1, -1):
+        for i in range(self.mps.shape[0]-2, 2, -1):
             right = self.mps[i] # Get tensor
             sh = right.shape
             right = np.reshape(right, [sh[0]*sh[1], sh[2]]) # reshape u and r into one dimension for svd
@@ -69,11 +69,25 @@ class MPS():
             self.mps[i-1] = np.einsum('uxl, Rx -> uRl', self.mps[i-1], v)
             self.mps[i-1] = np.einsum('uxl, Rx -> uRl', self.mps[i-1], s)
 
-    def leftNormalize(self, index):
+        right = self.mps[1]
+        sh = right.shape
+        right = np.reshape(right, [sh[0]*sh[1], sh[2]]) # reshape u and r into one dimension for svd
+        u, s, v = self.reduce_rank_svd(right)
+
+        # reshape u back into a rank-3 tensor and replace it
+        newShape = self.chi if u.shape[1] > self.chi else u.shape[1]
+        u = np.reshape(u, [sh[0], sh[1], newShape])
+        self.mps[1] = u
+
+        self.mps[0] = np.einsum('ux, Rx -> uR', self.mps[0], v)
+        self.mps[0] = np.einsum('ux, Rx -> uR', self.mps[0], s)
+
+    def leftNormalizeIndex(self, index):
         '''
-        Left normalize the MPS starting at index and working to the right.
+        Left normalize the MPS at index.
         '''
-        # TODO: Fix indices, currently can't left sweep!
+        checkIndex(index, True)
+
         if (index == 0):
             left = self.mps[0]
             u, s, v = self.reduce_rank_svd(left)
@@ -82,7 +96,13 @@ class MPS():
             self.mps[1] = np.einsum('xL,urx -> urL', s, self.mps[1])
             return
 
-        for i in range(index, self.mps.shape[0]-1):
+        if (index == self.length-2):
+            #TODO: Implement
+            print("oops!")
+            import sys
+            sys.exit(0)
+
+        for i in range(index, index): # self.mps.shape[0]-1):
             left = self.mps[i]
             sh = right.shape
             left = np.einsum('url->ulr', left)
@@ -99,15 +119,26 @@ class MPS():
             self.mps[i+1] = np.einsum('xL,urx -> urL', s, self.mps[i+1])
             return
 
-class MPO(MPS):
-    def rightNormalize(self):
+    def rightNormalizeIndex(self, index):
+        # TODO: Implement this
         pass
-    def leftNormalize(self):
-        pass
+
+    def checkIndex(self, index, p):
+        if (index < 0 or index > self.length):
+            print("Index invalid. ")
+            return False
+        if p: print ("Index valid. ")
+        return True
+
+# class MPO(MPS):
+#     def rightNormalize(self):
+#         pass
+#     def leftNormalize(self):
+#         pass
 
 class Network():
     '''
-    Variational ground state solver with initial guess of state and given
+    Variational ground state solver with initial guess of state (MPS) and given
     operator in Matrix Product Operator (MPO) form.
     '''
     def __init__(self, initialMPS, mpo):
@@ -123,28 +154,29 @@ class Network():
         all possible in a dictionary with the keys as the index the R goes to,
         from 0 to L-2 (if the last tensor is empty, there is no R).
         '''
-        l = self.state.shape[0]
-        last = self.state[l-1]
+        l = self.state.length-1
+        last = self.state.get()[l]
         # Initially, last is indexed up,right,down,left (last only has ul)
         # and operator is indexed up,right,down,left (no right at first)
-        R = np.einsum('xl,UxL -> UlL', last, self.operator[l-1])
+        R = np.einsum('xl,UxL -> UlL', last, self.operator[l])
         # last is now indexed "in reverse" d l r
-        R = np.einsum('xlL,xi -> lLi', R, last) #R = np.einsum('URrlL,xij -> ijRrlL', R, last)
+        R = np.einsum('xlL,xi -> lLi', R, last)
         # Now R is indexed bottomleft, middleleft, topleft = lLi
-        self.Rdict[l-1] = R # might need to copy R, as it might put a pointer to R there
-        for i in range(l-2, 0, -1):
-            next = self.state[i]
+        # might need to copy R, as it might put a pointer to R there
+        self.Rdict[l-1] = R
+        for i in range(l-1, 1, -1):
+            next = self.state.get()[i]
             temp = np.einsum('xrl,URxL -> URrlL', next, self.operator[i])
             temp = np.einsum('URrlL,xij -> ijRrlL', temp, next)
-            # R = np.einsum('xjRrlL,ixLlab -> ijRrab', R, temp)
             R = np.einsum('abc,icbalL -> lLi', R, temp)
-            self.Rdict[i] = R
+            self.Rdict[i-1] = R
 
     def findMatrix(self, index):
         '''
         Given an index, find the tensor to be used for the standard eigenvalue
         problem. Return it as a matrix (only two legs)
         '''
+
         R = self.Rdict[index]
         # R is indexed bottom, middle, top (=lLi)
         if (index == 0):
@@ -155,7 +187,7 @@ class Network():
 
         # L is indexed bottom, middle, top (=rRj)
         L = self.Ldict[index]
-        if (index == self.state.shape[0]-1):
+        if (index == self.state.length-1):
             matrix = np.einsum('rxj, UDx -> jUDr', L, self.operator[index])
             sh = matrix.shape
             matrix = np.reshape(matrix, [sh[0]*sh[1], sh[2]*sh[3]])
@@ -165,6 +197,7 @@ class Network():
         matrix = np.einsum('UilDx, rxj -> UilDrj', matrix, L)
         matrix = np.einsum('UilDrj -> jUilDr', matrix)
         sh = matrix.shape
+        self.storeShape = sh
         matrix = np.reshape(matrix, [sh[0]*sh[1]*sh[2], sh[3]*sh[4]*sh[5]])
         return matrix
 
@@ -173,9 +206,8 @@ class Network():
         Solve tensor1*tensor2 - \lambda * tensor2 = 0 for the smallest
         eigenvalue/eigentensor pair.
 
-        Actually, that is not necessary right now. For the moment, it just
-        takes a matrix and a vector and finds the smallest eigenvalue/eigenvector
-        pair.
+        Actually: Solve matrix*vector - \lambda * vector = 0 for the smallest
+        eigenvalue/eigenvector pair using Davidson's method.
         '''
         # TODO: Actually implement Davidson's Method.
         e, v = np.linalg.eig(tensor)
@@ -189,7 +221,7 @@ class Network():
         '''
         R_Builder()
         R = self.Rdict[0]
-        next = self.state[0]
+        next = self.state.get()[0]
         temp = np.einsum('xr,URx -> URr', next, self.operator[0])
         temp = np.einsum('xRr,xj -> jRr', temp, next)
         R = np.einsum('jRr,jRr', R, temp)
@@ -199,64 +231,73 @@ class Network():
         '''
         Find the minimum of <\psi|O|\psi> for operator O.
         Returns (wavefunction, energy) tuple
+        Argument num: number of cycles to compute.
         '''
-        # TODO: Left normalize in the right places
+        # TODO: Implement convergence or cycle until En-E(n-1) < \epsilon
+
+        # Step 1: Start from an initial guess that is right normalized
+        self.state.rightNormalize()
+
+        # Step 2: Calculate the R expressions iteratively
         R_Builder()
+
         for i in range(num):
-            # Right sweep
+            # Step 3: Right sweep
             tensor = findMatrix(0)
             eigen = davidson(tensor)
-            sh = self.state[j].shape
+            sh = self.state.get()[j].shape
             eigen[1] = np.reshape(eigen[1], [sh[0], sh[1]])
-            self.state[0] = eigen[1]
-            L = self.state[0]
+            # TODO: Probably doesn't work, implement changing state method
+            self.state.get()[0] = eigen[1]
+            self.state.leftNormalizeIndex(0)
+            L = self.state.get()[0]
             L = np.einsum('xr,URx->URr', L, self.operator[0])
             L = np.einsum('xRr,xi->rRi') # Now indexed bottom, middle, top
             self.Ldict[1] = L
 
-            for j in range(1, self.state.shape[0]-2):
+            for j in range(1, self.state.length-2):
                 tensor = findMatrix(j)
                 eigen = davidson(tensor)
-                sh = self.state[j].shape
+                sh = self.state.get()[j].shape
                 eigen[1] = np.reshape(eigen[1], [sh[0], sh[1], sh[2]])
-                self.state[j] = eigen[1]
-
-                Ltemp = np.einsum('xrl,URxL->URrlL', self.state[j], self.operator[i])
-                Ltemp = np.einsum('xRrlL,xij->ijRrlL', Ltemp, self.state[j])
+                self.state.get()[j] = eigen[1]
+                self.state.leftNormalizeIndex(j)
+                Ltemp = np.einsum('xrl,URxL->URrlL', self.state.get()[j], self.operator[i])
+                Ltemp = np.einsum('xRrlL,xij->ijRrlL', Ltemp, self.state.get()[j])
                 L = np.einsum('ijRrlL,lLi->rRj', Ltemp, L)
                 self.Ldict[j+1] = L
 
-            index = self.state.shape[0]-1
+
+            # Step 4: Left sweep
+            index = self.state.length-1
             tensor = findMatrix(index)
             eigen = davidson(tensor)
-            sh = self.state[index].shape
+            sh = self.state.get()[index].shape
+            # NOTE: possible source of error here, since sh[0] and sh[1] may be flipped
             eigen[1] = np.reshape(eigen[1], [sh[0], sh[1]])
-            self.state[index] = eigen[1]
+            self.state.get()[index] = eigen[1]
+            self.state.rightNormalizeIndex(index)
 
-            last = self.state[index]
+            last = self.state.get()[index]
             R = np.einsum('xl,UxL -> UlL', last, self.operator[index])
             R = np.einsum('xlL,xi -> lLi', R, last)
             # Now R is indexed bottomleft, middleleft, topleft = lLi
-            self.Rdict[index-1] = R # might need to copy R, as it might put a pointer to R there
+            self.Rdict[index-1] = R
+            # might need to copy R, as it might put a pointer to R there
 
-            # Left sweep
-            for j in range(self.state.shape[0]-2, 1, -1):
+            for j in range(self.state.length-2, 1, -1):
                 tensor = findMatrix(j)
                 eigen = davidson(tensor)
                 sh = self.state[j].shape
                 eigen[1] = np.reshape(eigen[1], [sh[0], sh[1], sh[2]])
                 self.state[j] = eigen[1]
+                self.state.rightNormalizeIndex(j)
 
                 Rtemp = np.einsum('xrl,URxL->URrlL', self.state[j], self.operator[i])
                 Rtemp = np.einsum('xRrlL,xij->ijRrlL', Rtemp, self.state[j])
                 R = np.einsum('ijRrlL,rRj->lLi', Rtemp, R)
                 self.Rdict[j-1] = R
 
-            index = 0
-            tensor = findMatrix(index)
-            eigen = davidson(tensor)
-            sh = self.state[index].shape
-            eigen[1] = np.reshape(eigen[1], [sh[0], sh[1]])
-            self.state[index] = eigen[1]
+            # Step 5: Repeat sweeps until done
 
-        return (self.state, contract())
+        return (self.state, self.contract())
