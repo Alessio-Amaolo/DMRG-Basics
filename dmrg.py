@@ -86,7 +86,7 @@ class MPS():
         '''
         Left normalize the MPS at index.
         '''
-        checkIndex(index, True)
+        assert (index >= 0 and index <= self.length-1), "Index Invalid"
 
         if (index == 0):
             left = self.mps[0]
@@ -96,15 +96,10 @@ class MPS():
             self.mps[1] = np.einsum('xL,urx -> urL', s, self.mps[1])
             return
 
-        if (index == self.length-2):
-            #TODO: Implement
-            print("oops!")
-            import sys
-            sys.exit(0)
-
+        # TODO: fix this so it doens't iterate over 1 number.
         for i in range(index, index): # self.mps.shape[0]-1):
             left = self.mps[i]
-            sh = right.shape
+            sh = left.shape
             left = np.einsum('url->ulr', left)
             left = np.reshape(left, [sh[0]*sh[1], sh[2]]) # reshape u and r into one dimension for svd
             u, s, v = self.reduce_rank_svd(left) # regular svd?
@@ -115,20 +110,42 @@ class MPS():
             u = np.einsum('ulr->url', u)
             self.mps[i] = u
 
-            self.mps[i+1] = np.einsum('xL,urx -> urL', v, self.mps[i+1])
-            self.mps[i+1] = np.einsum('xL,urx -> urL', s, self.mps[i+1])
+            if (i == self.length-2):
+                self.mps[i+1] = np.einsum('xL,ux -> uL', v, self.mps[i+1])
+                self.mps[i+1] = np.einsum('xL,ux -> uL', s, self.mps[i+1])
+            else:
+                self.mps[i+1] = np.einsum('xL,urx -> urL', v, self.mps[i+1])
+                self.mps[i+1] = np.einsum('xL,urx -> urL', s, self.mps[i+1])
             return
 
     def rightNormalizeIndex(self, index):
-        # TODO: Implement this
-        pass
+        assert (index >= 0 and index <= self.length-1), "Index Invalid"
+        if (index == self.length-1):
+            right = self.mps[index]
+            u, s, v = self.reduce_rank_svd(right)
+            self.mps[index] = u
+            self.mps[index-1] = np.einsum('Rx,uxl -> uRl', v, self.mps[index-1])
+            self.mps[index-1] = np.einsum('Rx,uxl -> uRl', s, self.mps[index-1])
+            return
 
-    def checkIndex(self, index, p):
-        if (index < 0 or index > self.length):
-            print("Index invalid. ")
-            return False
-        if p: print ("Index valid. ")
-        return True
+        right = self.mps[index]
+        sh = right.shape
+        right = np.reshape(right, [sh[0]*sh[1], sh[2]]) # reshape u and r into one dimension for svd
+        u, s, v = self.reduce_rank_svd(left) # regular svd?
+
+        # reshape u back into a rank-3 tensor and replace it
+        newShape = self.chi if u.shape[1] > self.chi else u.shape[1]
+        u = np.reshape(u, [sh[0], sh[1], newShape])
+        self.mps[index] = u
+
+        if (index == 1):
+            self.mps[index-1] = np.einsum('rx,ux -> ur', v, self.mps[index-1])
+            self.mps[index-1] = np.einsum('rx,ux -> ur', s, self.mps[index-1])
+        else:
+            self.mps[index-1] = np.einsum('Rx,uxl -> uRl', v, self.mps[index-1])
+            self.mps[index-1] = np.einsum('Rx,uxl -> uRl', s, self.mps[index-1])
+        return
+
 
 # class MPO(MPS):
 #     def rightNormalize(self):
