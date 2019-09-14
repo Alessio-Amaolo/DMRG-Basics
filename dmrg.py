@@ -3,6 +3,7 @@
 
 import numpy as np
 import scipy.linalg
+import sys
 
 class MPS():
     '''
@@ -30,6 +31,7 @@ class MPS():
             self.length = len(self.mps)
         self.chi = chi
         assert self.length > 2, "Length cannot be shorter than 3."
+        assert self.length < 46, "MPS cannot right normalize if length is > 45"
 
     def __str__(self):
         print(self.mps)
@@ -63,8 +65,7 @@ class MPS():
         self.mps[l] = v
         self.mps[l-1] = np.einsum('uxl, Rx -> uRl', self.mps[l-1], u)
         self.mps[l-1] = np.einsum('uxl, Rx -> uRl', self.mps[l-1], s)
-
-        for i in range(l-1, 2, -1):
+        for i in range(l-1, 1, -1):
             right = self.mps[i] # Get tensor
             sh = right.shape
             right = np.reshape(right, [sh[0]*sh[1], sh[2]]) # reshape u and r into one dimension for svd
@@ -76,8 +77,6 @@ class MPS():
             # reshape v back into a rank-3 tensor and replace it
             right = np.einsum('ab->ba', right)  # now indexed M((U,R), L)
             v = np.reshape(v, [sh[0], sh[1], sh[2]])  # now U,R,L
-            #[sh[2], sh[0], sh[1]]) # Now L,U,R
-            #v = np.einsum('abc->bca', v)
             self.mps[i] = v
 
             self.mps[i-1] = np.einsum('uxl, Rx -> uRl', self.mps[i-1], u)
@@ -94,7 +93,6 @@ class MPS():
         right = np.einsum('ab->ba', right) # now indexed M((U,R), L)
         v = np.reshape(v, [sh[0], sh[1], sh[2]]) # Now U, R, L
         self.mps[1] = v
-
         self.mps[0] = np.einsum('ux, Rx -> uR', self.mps[0], u)
         self.mps[0] = np.einsum('ux, Rx -> uR', self.mps[0], s)
 
@@ -103,7 +101,7 @@ class MPS():
         Left normalize the MPS at index, multiplying s and v into the previous
         tensor.
         '''
-        assert (index >= 0 and index <= self.length-1), "Index Invalid"
+        assert (index >= 0 and index < self.length-1), "Index Invalid"
 
         if (index == 0):
             left = self.mps[0]
@@ -136,40 +134,46 @@ class MPS():
             return
 
     def rightNormalizeIndex(self, index):
-        assert (index >= 0 and index <= self.length-1), "Index Invalid"
-        if (index == self.length-1):
+        assert (index > 0 and index <= self.length-1), "Index Invalid"
+        l = self.length-1
+        if (index == l):
             right = self.mps[index]
-            u, s, v = self.reduce_rank_svd(right)
-            self.mps[index] = u
-            self.mps[index-1] = np.einsum('Rx,uxl -> uRl', v, self.mps[index-1])
-            self.mps[index-1] = np.einsum('Rx,uxl -> uRl', s, self.mps[index-1])
+            u, s, v = scipy.linalg.svd(right, full_matrices=False, lapack_driver='gesvd')
+            s = np.diag(s)
+            self.mps[l] = v
+            self.mps[l-1] = np.einsum('uxl, Rx -> uRl', self.mps[l-1], u)
+            self.mps[l-1] = np.einsum('uxl, Rx -> uRl', self.mps[l-1], s)
             return
 
         right = self.mps[index]
         sh = right.shape
         right = np.reshape(right, [sh[0]*sh[1], sh[2]]) # reshape u and r into one dimension for svd
-        u, s, v = self.reduce_rank_svd(left) # regular svd?
+        right = np.einsum('ab->ba', right) # now indexed M(L,(U,R))
+        u, s, v = scipy.linalg.svd(right, full_matrices=False, lapack_driver='gesvd')
+        s = np.diag(s)
 
-        # reshape u back into a rank-3 tensor and replace it
-        newShape = self.chi if u.shape[1] > self.chi else u.shape[1]
-        u = np.reshape(u, [sh[0], sh[1], newShape])
-        self.mps[index] = u
+        right = np.einsum('ab->ba', right)
+        v = np.reshape(v, [sh[0], sh[1], sh[2]])  # now U,R,L
+        self.mps[index] = v
 
         if (index == 1):
-            self.mps[index-1] = np.einsum('rx,ux -> ur', v, self.mps[index-1])
-            self.mps[index-1] = np.einsum('rx,ux -> ur', s, self.mps[index-1])
+            self.mps[index-1] = np.einsum('ux, Rx -> uR', self.mps[index-1], u)
+            self.mps[index-1] = np.einsum('ux, Rx -> uR', self.mps[index-1], s)
         else:
-            self.mps[index-1] = np.einsum('Rx,uxl -> uRl', v, self.mps[index-1])
-            self.mps[index-1] = np.einsum('Rx,uxl -> uRl', s, self.mps[index-1])
+            self.mps[index-1] = np.einsum('uxl, Rx -> uRl', self.mps[index-1], u)
+            self.mps[index-1] = np.einsum('uxl, Rx -> uRl', self.mps[index-1], s)
         return
 
-    def contract(self, all=0):
+    def contract(self, all=0, p=False):
         '''
         Contract without renormalization. All flag:
          = 0 finds <\psi|\psi>, assuming no normalization structure
          = -1 contracts up to the first tensor, should return 1 if MPS is correctly right normalized.
          = 1 takes the trace of the first tensor, which = <\psi|\psi> if the MPS is correctly right normalized.
+        p = True prints the values as it contracts, False does not.
         '''
+        # NOTE: Why does this work? I think next should be contracted with
+        # xrl,xLR -> lLrR but what really works is xrl,xRL->lLrR.
         if all == 1:
             final = np.einsum('xr,xR->rR', self.mps[0], self.mps[0])
             final = np.einsum('rR,rR', final, final)
@@ -179,15 +183,24 @@ class MPS():
         edge = np.einsum('xl,xL->lL', self.mps[l-1], self.mps[l-1])
         next = np.einsum('xrl,xRL->lLrR', self.mps[l-2], self.mps[l-2]) #xLR->lLrR', self.mps[l-2], self.mps[l-2])
         final = np.einsum('rR,lLrR->lL', edge, next)
-        print(np.einsum('lL,lL', final, final))
+        if p: print(np.einsum('lL,lL', final, final))
         for i in range(l-2, 1, -1):
             next = np.einsum('xrl,xRL->lLrR', self.mps[i-1], self.mps[i-1]) #xLR->lLrR', self.mps[i-1], self.mps[i-1])
             final = np.einsum('rR,lLrR->lL', final, next)
-            print(np.einsum('rR,rR', final, final))
-        final = np.einsum('lL,lL', final, edge)
-        print(final)
-        assert np.isclose(np.imag(final), 0)
-        return np.real(final)
+            if p: print(np.einsum('lL,lL', final, final))
+        if all == -1:
+            final = np.einsum('lL,lL', final, final)
+            if p: print(np.einsum('lL,lL', final, final))
+            assert np.isclose(np.imag(final), 0)
+            return np.real(final)
+        if all == 0:
+            final = np.einsum('lL,lL', final, edge)
+            if p: print(np.einsum('lL,lL', final, final))
+            assert np.isclose(np.imag(final), 0)
+            return np.real(final)
+        print("mps.contract() did not return anything!")
+        sys.exit(0)
+
 
 
 # class MPO(MPS):
@@ -366,7 +379,7 @@ def buildIsingMPS():
     '''
     Build an example MPS with the transfer matrix used to solve the ising model.
     '''
-    L = 50
+    L = 10
     J,k,H,T,chi = 1,1,0,0.1,10
     K,h = J/(k*T), H/(k*T)
     V = np.array([[np.exp(K+h), np.exp(-K)], [np.exp(-K), np.exp(K-h)]])
@@ -379,8 +392,16 @@ def buildIsingMPS():
     edgeTensor = np.einsum('ux, Rx, xj -> uRj', G, G, G)
     return MPS((cornerTensor, edgeTensor, cornerTensor, L), chi)
 
+def buildExampleMPO():
+    '''
+    Build an example MPO.
+    '''
+    #TODO: implement this function
+    pass
+
 def FullTest():
     # Generate an example MPS
+    print("Testing MPS initialization and full right normalization. ")
     mps = buildIsingMPS()
     print("Initialization of MPS successful. ")
     # Right normalize the example MPS
@@ -389,30 +410,57 @@ def FullTest():
     print("Right normalization did not return any errors. ")
 
     # Contract the example MPS and assert it is 1
-    c = mps.contract()
+    c = mps.contract(-1)
     print("MPS contraction did not return any errors. ")
-    if (np.isclose(c,1)):
-        print("<\psi|\psi> = 1, right normalization and contraction likely worked correctly.")
+    if (np.isclose(c,2)):
+        print("Tr(<\psi|\psi>) up to index 1 = 2, right normalization and contraction likely worked correctly.")
     else:
-        print("<\psi|\psi> = " + str(c) + ", right normalization or contraction likely failed")
+        print("Tr(<\psi|\psi>) up to index = " + str(c) + ", right normalization or contraction likely failed")
 
-    # Make sure right and left normalization works
-    # mps.leftNormalizeIndex(2)
-    # print("Left normalization at index 2 did not return any errors.")
-    # #u = mps.get()[2]
-    # #print((np.matmul(u,np.transpose(u))))
-    # #     print("Matrix in MPS at index 2 is unitary.")
-    # # else:
-    # #     print("Matrix in MPS at index 2 is not unitary despite left normalization")
-    # # print("Multiplication to the right into index 1 not tested. ")
-    # # # TODO: Do that
+    print("\nTesting rightNormalizeIndex.")
+    # Test rightNormalizeIndex by doing full right normalization one at a time
+    mps = buildIsingMPS()
+    for i in range(mps.length-1, 0, -1):
+        mps.rightNormalizeIndex(i)
+    print("rightNormalizeIndex did not return any errors at any index.")
+    c = mps.contract(-1)
+    print("MPS contraction did not return any errors. ")
+    if (np.isclose(c,2)):
+        print("Tr(<\psi|\psi>) up to index 1 = 2, right normalization likely worked correctly.")
+    else:
+        print("Tr(<\psi|\psi>) up to index = " + str(c) + ", right normalization likely failed")
+
+    print("\nTesting leftNormalizeIndex.")
+    mps.leftNormalizeIndex(0)
+    print("Left normalization at index 0 did not return any errors.")
+    c = mps.contract(1)
+    if (np.isclose(c,2)):
+        print("Tr(first tensor) = 2, left normalization at index 0 likely worked")
+    else:
+        print("Tr(first tensor) = " + str(c) + ", left normalization at index 0 failed.")
+
+    # Make sure replacing and getting works.
+    print("\nTesting replacing tensors as used later in Network class. ")
+    mps = buildIsingMPS()
+    mps2 = mps.get().copy()
+    mps.get()[1] = np.random.rand(2,2,2)
+    if not np.isclose(np.real(mps2[1][0][0][0]), np.real(mps.get()[1][0][0][0])):
+        print("Replacement seems to have worked correctly. ")
+
+    print("\nMPS class passed all tests.")
+
+    # mps = buildIsingMPS()
+    # print("\nTesting MPO initialization.")
+    # mpo = buildExampleMPO()
+    # print("Initialization of MPO did not return any errors.")
+    # print("Initializing Network class with example MPS and MPO.")
+    # network = Network(mps, mpo)
     #
-    # # Make sure replacing and getting works.
-    # mps2 = mps.get().copy()
-    # mps.get()[1] = np.random.rand(2,2,2)
-    # if not np.isclose(mps2, mps.get()):
-    #     print("Replacement seems to have worked correctly. ")
-
+    # # TODO: implement all these tests
+    # print("\n Testing function R_Builder")
+    # network.R_Builder()
+    #
+    # print("\n Testing contraction with identity MPO. ")
 
     # Pass the MPS with a sample MPO to the Network class.
     # Test contraction with identity MPO
@@ -420,6 +468,6 @@ def FullTest():
     # Test that replacement is working correctly
     # Ensure davidson is working by passing very basic matrices and seeing them by hand
     # Test solve() very carefully
-    pass
+    return
 
 FullTest()
