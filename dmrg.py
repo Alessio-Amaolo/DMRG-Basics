@@ -40,6 +40,12 @@ class MPS():
     def get(self):
         return(self.mps)
 
+    def __getitem__(self, index):
+        return(self.mps[index])
+
+    def __setitem__(self, index, value):
+        self.mps[index] = value
+
     def reduce_rank_svd(self, mat):
         '''
         SVD then reduce rank. Return u, s, and v matrices.
@@ -228,21 +234,22 @@ class Network():
         from 0 to L-2 (if the last tensor is empty, there is no R).
         '''
         l = self.state.length-1
-        last = self.state.get()[l]
+        last = self.state[l]
         # Initially, last is indexed up,right,down,left (last only has ul)
         # and operator is indexed up,right,down,left (no right at first)
         R = np.einsum('xl,UxL -> UlL', last, self.operator[l])
         # last is now indexed "in reverse" d l r
         R = np.einsum('xlL,xi -> lLi', R, last)
         # Now R is indexed bottomleft, middleleft, topleft = lLi
-        # might need to copy R, as it might put a pointer to R there
         self.Rdict[l-1] = R
-        for i in range(l-1, 1, -1):
-            next = self.state.get()[i]
+        #print(np.einsum('abc,abc', R, R))
+        for i in range(l-1, 0, -1):
+            next = self.state[i]
             temp = np.einsum('xrl,URxL -> URrlL', next, self.operator[i])
             temp = np.einsum('URrlL,xij -> ijRrlL', temp, next)
             R = np.einsum('abc,icbalL -> lLi', R, temp)
             self.Rdict[i-1] = R
+            #print(np.einsum('abc,abc', R, R))
 
     def findMatrix(self, index):
         '''
@@ -250,21 +257,23 @@ class Network():
         problem. Return it as a matrix (only two legs)
         '''
 
-        R = self.Rdict[index]
         # R is indexed bottom, middle, top (=lLi)
         if (index == 0):
+            R = self.Rdict[index]
             matrix = np.einsum('lxi, UxD -> UilD', R, self.operator[index])
             sh = matrix.shape
             matrix = np.reshape(matrix, [sh[0]*sh[1], sh[2]*sh[3]])
             return matrix
 
-        # L is indexed bottom, middle, top (=rRj)
-        L = self.Ldict[index]
         if (index == self.state.length-1):
+            L = self.Ldict[index]
             matrix = np.einsum('rxj, UDx -> jUDr', L, self.operator[index])
             sh = matrix.shape
             matrix = np.reshape(matrix, [sh[0]*sh[1], sh[2]*sh[3]])
             return matrix
+        # L is indexed bottom, middle, top (=rRj)
+        L = self.Ldict[index]
+        R = self.Rdict[index]
 
         matrix = np.einsum('lxi, UxDL -> UilDL', R, self.operator[index])
         matrix = np.einsum('UilDx, rxj -> UilDrj', matrix, L)
@@ -286,13 +295,13 @@ class Network():
         e, v = np.linalg.eig(tensor)
         m = np.amin(e)
         v = v[np.where(e == m)]
-        return (m, v)
+        return [m, v]
 
     def contract(self):
         '''
         Contract the entire network to find <\psi|O|\psi>
         '''
-        R_Builder()
+        self.R_Builder()
         R = self.Rdict[0]
         next = self.state.get()[0]
         temp = np.einsum('xr,URx -> URr', next, self.operator[0])
@@ -316,71 +325,61 @@ class Network():
 
         for i in range(num):
             # Step 3: Right sweep
-            tensor = findMatrix(0)
-            eigen = davidson(tensor)
-            sh = self.state.get()[j].shape
-            eigen[1] = np.reshape(eigen[1], [sh[0], sh[1]])
-            # TODO: Probably doesn't work, implement changing state method
-            self.state.get()[0] = eigen[1]
+            tensor = self.findMatrix(0)
+            eigen = self.davidson(tensor)
+            sh = self.state[0].shape
+            eigen[1] = np.reshape(eigen[1][0], [sh[0], sh[1]])
+            self.state[0] = eigen[1]
             self.state.leftNormalizeIndex(0)
-            L = self.state.get()[0]
-            L = np.einsum('xr,URx->URr', L, self.operator[0])
-            L = np.einsum('xRr,xi->rRi') # Now indexed bottom, middle, top
+            L = self.state[0]
+            Ltemp = np.einsum('xr,URx->URr', L, self.operator[0])
+            L = np.einsum('xRr,xi->rRi', Ltemp, L) # Now indexed bottom, middle, top
             self.Ldict[1] = L
 
-            for j in range(1, self.state.length-2):
-                tensor = findMatrix(j)
-                eigen = davidson(tensor)
-                sh = self.state.get()[j].shape
-                eigen[1] = np.reshape(eigen[1], [sh[0], sh[1], sh[2]])
-                self.state.get()[j] = eigen[1]
+            for j in range(1, self.state.length-1):
+                tensor = self.findMatrix(j)
+                eigen = self.davidson(tensor)
+                sh = self.state[j].shape
+                eigen[1] = np.reshape(eigen[1][0], [sh[0], sh[1], sh[2]])
+                self.state[j] = eigen[1]
                 self.state.leftNormalizeIndex(j)
-                Ltemp = np.einsum('xrl,URxL->URrlL', self.state.get()[j], self.operator[i])
-                Ltemp = np.einsum('xRrlL,xij->ijRrlL', Ltemp, self.state.get()[j])
+                Ltemp = np.einsum('xrl,URxL->URrlL', self.state[j], self.operator[j])
+                Ltemp = np.einsum('xRrlL,xij->ijRrlL', Ltemp, self.state[j])
                 L = np.einsum('ijRrlL,lLi->rRj', Ltemp, L)
                 self.Ldict[j+1] = L
-
-
             # Step 4: Left sweep
             index = self.state.length-1
-            tensor = findMatrix(index)
-            eigen = davidson(tensor)
-            sh = self.state.get()[index].shape
+            tensor = self.findMatrix(index)
+            eigen = self.davidson(tensor)
+            sh = self.state[index].shape
             # NOTE: possible source of error here, since sh[0] and sh[1] may be flipped
-            eigen[1] = np.reshape(eigen[1], [sh[0], sh[1]])
-            self.state.get()[index] = eigen[1]
+            eigen[1] = np.reshape(eigen[1][0], [sh[0], sh[1]])
+            self.state[index] = eigen[1]
             self.state.rightNormalizeIndex(index)
-
-            last = self.state.get()[index]
+            last = self.state[index]
             R = np.einsum('xl,UxL -> UlL', last, self.operator[index])
-            R = np.einsum('xlL,xi -> lLi', R, last)
-            # Now R is indexed bottomleft, middleleft, topleft = lLi
+            R = np.einsum('xlL,xi -> lLi', R, last) # Now R is indexed bottomleft, middleleft, topleft = lLi
             self.Rdict[index-1] = R
-            # might need to copy R, as it might put a pointer to R there
 
-            for j in range(self.state.length-2, 1, -1):
-                tensor = findMatrix(j)
-                eigen = davidson(tensor)
+            for j in range(self.state.length-2, 0, -1):
+                tensor = self.findMatrix(j)
+                eigen = self.davidson(tensor)
                 sh = self.state[j].shape
-                eigen[1] = np.reshape(eigen[1], [sh[0], sh[1], sh[2]])
+                eigen[1] = np.reshape(eigen[1][0], [sh[0], sh[1], sh[2]])
                 self.state[j] = eigen[1]
                 self.state.rightNormalizeIndex(j)
-
-                Rtemp = np.einsum('xrl,URxL->URrlL', self.state[j], self.operator[i])
+                Rtemp = np.einsum('xrl,URxL->URrlL', self.state[j], self.operator[j])
                 Rtemp = np.einsum('xRrlL,xij->ijRrlL', Rtemp, self.state[j])
                 R = np.einsum('ijRrlL,rRj->lLi', Rtemp, R)
                 self.Rdict[j-1] = R
 
-            # Step 5: Repeat sweeps until done
+        return (self.state.get(), self.contract())
 
-        return (self.state, self.contract())
-
-def buildIsingMPS():
+def buildIsingMPS(L=10, chi=10):
     '''
     Build an example MPS with the transfer matrix used to solve the ising model.
     '''
-    L = 10
-    J,k,H,T,chi = 1,1,0,0.1,10
+    J,k,H,T = 1,1,0,0.1
     K,h = J/(k*T), H/(k*T)
     V = np.array([[np.exp(K+h), np.exp(-K)], [np.exp(-K), np.exp(K-h)]])
     D, M = scipy.linalg.eig(V) # Eigenvalue decomposition of matrix
@@ -392,15 +391,26 @@ def buildIsingMPS():
     edgeTensor = np.einsum('ux, Rx, xj -> uRj', G, G, G)
     return MPS((cornerTensor, edgeTensor, cornerTensor, L), chi)
 
-def buildExampleMPO():
+def buildExampleMPO(I=True, L=10, chi=10):
     '''
     Build an example MPO.
     '''
-    #TODO: implement this function
+    #TODO: implement this function correctly
+    if I:
+        # They're all identity, but for the sake of clarity:
+        V = np.array([[1, 0], [0, 1]])
+        D, M = scipy.linalg.eig(V) # Eigenvalue decomposition of matrix
+        D = np.diag(D)
+        G = M.dot(D**0.5).dot(scipy.linalg.inv(M))
+        edgeTensor = np.einsum('Ux, Rx, xD -> URD', G, G, G)
+        middleTensor = np.einsum('Ux, Rx, xD, xL -> URDL', G, G, G, G)
+        return MPS((edgeTensor, middleTensor, edgeTensor, L), chi)
     pass
 
 def FullTest():
     # Generate an example MPS
+    L,chi = 10,10
+    testFlag = True
     print("Testing MPS initialization and full right normalization. ")
     mps = buildIsingMPS()
     print("Initialization of MPS successful. ")
@@ -416,6 +426,7 @@ def FullTest():
         print("Tr(<\psi|\psi>) up to index 1 = 2, right normalization and contraction likely worked correctly.")
     else:
         print("Tr(<\psi|\psi>) up to index = " + str(c) + ", right normalization or contraction likely failed")
+        testFlag = False
 
     print("\nTesting rightNormalizeIndex.")
     # Test rightNormalizeIndex by doing full right normalization one at a time
@@ -423,12 +434,13 @@ def FullTest():
     for i in range(mps.length-1, 0, -1):
         mps.rightNormalizeIndex(i)
     print("rightNormalizeIndex did not return any errors at any index.")
-    c = mps.contract(-1)
+    c1 = mps.contract(-1)
     print("MPS contraction did not return any errors. ")
-    if (np.isclose(c,2)):
+    if (np.isclose(c1,2)):
         print("Tr(<\psi|\psi>) up to index 1 = 2, right normalization likely worked correctly.")
     else:
-        print("Tr(<\psi|\psi>) up to index = " + str(c) + ", right normalization likely failed")
+        print("Tr(<\psi|\psi>) up to index = " + str(c1) + ", right normalization likely failed")
+        testFlag = False
 
     print("\nTesting leftNormalizeIndex.")
     mps.leftNormalizeIndex(0)
@@ -438,36 +450,67 @@ def FullTest():
         print("Tr(first tensor) = 2, left normalization at index 0 likely worked")
     else:
         print("Tr(first tensor) = " + str(c) + ", left normalization at index 0 failed.")
+        testFlag = False
 
     # Make sure replacing and getting works.
     print("\nTesting replacing tensors as used later in Network class. ")
     mps = buildIsingMPS()
     mps2 = mps.get().copy()
-    mps.get()[1] = np.random.rand(2,2,2)
-    if not np.isclose(np.real(mps2[1][0][0][0]), np.real(mps.get()[1][0][0][0])):
+    mps[1] = np.random.rand(2,2,2)
+    print("__setitem__ did not return any errors.")
+    if not np.isclose(np.real(mps2[1][0][0][0]), np.real(mps[1][0][0][0])):
         print("Replacement seems to have worked correctly. ")
+    else:
+        print("Replacement failed.")
+        testFlag = False
 
-    print("\nMPS class passed all tests.")
+    print("\nMPS class passed all tests.\n") if testFlag else print("\nMPS failed some tests.\n")
 
-    # mps = buildIsingMPS()
-    # print("\nTesting MPO initialization.")
-    # mpo = buildExampleMPO()
-    # print("Initialization of MPO did not return any errors.")
-    # print("Initializing Network class with example MPS and MPO.")
-    # network = Network(mps, mpo)
-    #
-    # # TODO: implement all these tests
-    # print("\n Testing function R_Builder")
-    # network.R_Builder()
-    #
-    # print("\n Testing contraction with identity MPO. ")
+    testFlag = True
+    mps = buildIsingMPS()
+    print("\nTesting MPO initialization.")
+    mpo = buildExampleMPO()
+    print("Initialization of MPO did not return any errors.")
+    print("Initializing Network class with example MPS and MPO.")
+    network = Network(mps, mpo)
 
-    # Pass the MPS with a sample MPO to the Network class.
-    # Test contraction with identity MPO
-    # Test that the R builder works correctly via full contraction with identity MPO
-    # Test that replacement is working correctly
-    # Ensure davidson is working by passing very basic matrices and seeing them by hand
-    # Test solve() very carefully
+    print("\nTesting function R_Builder")
+    network.state.rightNormalize()
+    # Right normalize, then Tr(R) should be 2 for all
+    network.R_Builder()
+    # Is the MPO correctly built? Tr(R) halves each index
+    print("R_Builder probably works based on tests I do not want to automate.")
+    print("Example (identity) MPO likely built incorrectly.")
+
+    print("\nTesting contraction with test MPO. ")
+    c = network.contract()
+
+    if (np.isclose(c, c1)):
+        print("Contraction returns the same thing as MPS contraction. MPO was likely built correctly, contraction likely works.")
+    else:
+        print("MPS contraction != identity MPO contraction. MPO initialization or contraction worked incorrectly.")
+        testFlag = False
+
+    network = Network(mps, mpo)
+    print("\nTesting findMatrix at index 0")
+
+    network.state.rightNormalize()
+    network.R_Builder()
+    m = network.findMatrix(0)
+    if (m.shape == (4,4,4)):
+        print("m has correct shape at index 0.")
+    print("The rest of findMatrix cannot be tested until solve() is tested. ")
+
+
+    print("\nTesting solve() with brand new network.")
+    mpo = buildExampleMPO()
+    network = Network(mps, mpo)
+    mps = buildIsingMPS()
+    a = network.solve(5)
+    print("Network solve() did not return any errors, no idea if correct. ")
+
+    print("\nNetwork class passed all tests.") if testFlag else print("\nNetwork class failed some tests.")
+
     return
 
 FullTest()
