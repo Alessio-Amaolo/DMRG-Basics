@@ -223,7 +223,8 @@ class MPO():
     Hamiltonian to build), and "coeff" (an array of coefficients in the
     Hamiltonian, unique for each possible "H").
     For now, "H" will just include "NN" (nearest neighbor bosonic interactions),
-    "NNN" (next-nearest neighbor bosonic interactions), and
+    "NNN" (next-nearest neighbor bosonic interactions), "NNN_Heis" (next-nearest
+    neighbor interacting Heisenberg model) and
     "exp" (exponentially decaying long-range bosonic interactions).
 
     Returns an ndarray of length L, where each element is a 4-index tensor
@@ -240,7 +241,7 @@ class MPO():
         self.Oi = Oi
         self.Oj = Oj
         self.d = d
-        if H not in ["NNN","NN","exp"]:
+        if H not in ["NNN","NN","exp","NNN_Heis"]:
             raise ValueError("we dont support this Hamiltonian yet")
         self.Ham = H
         self.coeff = coeff
@@ -250,6 +251,14 @@ class MPO():
             self.mpo, self.D = self.__gen_NN(L, Oi, Oj)
         elif H == "exp":
             self.mpo, self.D = self.__gen_exp(L, Oi, Oj, coeff)
+        elif H == "NNN_Heis":
+            self.mpo, self.D = self.__gen_NNN_Heis(L,coeff)
+            Sz = 0.5*np.array([[1.0,0.0],[0.0,-1.0]])
+            Sp = np.array([[0.0,0.0],[1.0,0.0]])
+            Sm = np.array([[0.0,1.0],[0.0,0.0]])
+            self.Oi = np.array([Sz,Sp,Sm], dtype=object)
+            self.Oj = np.array([Sz,Sp,Sm], dtype=object)
+            self.d = 2
 
 
 
@@ -296,6 +305,70 @@ class MPO():
             ret[i] = copy.deepcopy(tmp)
 
         return ret, 4
+
+
+    '''
+    Private function to build the NNN_Heis MPO. This is very similar to the NNN
+    MPO, but instead of a single operator for Oi and Oj, we include the full
+    Heisenberg spin vector for spin-1/2. "coeff" should thus be the same as the
+    NNN case, but Oi and Oj will be set internally. The model is:
+    H = J1 * \sum_{k} \vec{S}_{k} \vec{S}_{k+1} + J2 * \sum_{k} \vec{S}_{k} \vec{S}_{k+2}.
+    If you make J1 and J2 both negative, this defines a frustrated
+    Heisenberg problem with very interesting physical properties.
+    '''
+    def __gen_NNN_Heis(self, L, coeff):
+
+        assert len(coeff) == 2
+        J1 = coeff[0]
+        J2 = coeff[1]
+
+        d = 2
+        one = np.eye(d)
+        Sz = 0.5*np.array([[1.0,0.0],[0.0,-1.0]])
+        Sp = np.array([[0.0,0.0],[1.0,0.0]])
+        Sm = np.array([[0.0,1.0],[0.0,0.0]])
+
+        ret = np.zeros(L,dtype=object)
+
+        # first site (left)
+        tmp = np.zeros([d,8,d])
+        tmp[:,1,:] = J1 * Sz
+        tmp[:,2,:] = J1 * Sp
+        tmp[:,3,:] = J1 * Sm
+        tmp[:,4,:] = J2 * Sz
+        tmp[:,5,:] = J2 * Sp
+        tmp[:,6,:] = J2 * Sm
+        tmp[:,7,:] = one
+        ret[0] = tmp
+
+        # last site (right)
+        tmp = np.zeros([d,d,8])
+        tmp[:,:,0] = one
+        tmp[:,:,1] = Sz
+        tmp[:,:,2] = Sm
+        tmp[:,:,3] = Sp
+        ret[-1] = tmp
+
+        # bulk sites
+        tmp = np.zeros([d,8,d,8])
+        tmp[:,0,:,0] = one
+        tmp[:,0,:,1] = Sz
+        tmp[:,0,:,2] = Sm
+        tmp[:,0,:,3] = Sp
+        tmp[:,1,:,4] = one
+        tmp[:,2,:,5] = one
+        tmp[:,3,:,6] = one
+        tmp[:,1,:,7] = J1 * Sz
+        tmp[:,2,:,7] = J1 * Sp
+        tmp[:,3,:,7] = J1 * Sm
+        tmp[:,4,:,7] = J2 * Sz
+        tmp[:,5,:,7] = J2 * Sp
+        tmp[:,6,:,7] = J2 * Sm
+        tmp[:,7,:,7] = one
+        for i in range(1,L-1):
+            ret[i] = copy.deepcopy(tmp)
+
+        return ret, 8
 
 
     '''
@@ -606,6 +679,9 @@ def FullTest():
     mpo = MPO(L,Oi,Oj,"NNN",coeff)
     net = Network(test_mps,mpo)
     assert net.contract() == coeff[0]*(L-1) + coeff[1]*(L-2)
+    mpo = MPO(L,Oi,Oj,"NNN_Heis",coeff)
+    net = Network(test_mps,mpo)
+    assert net.contract() == 0.25*(coeff[0]*(L-1) + coeff[1]*(L-2))
     coeff = [0.6]
     mpo = MPO(L,Oi,Oj,"exp",coeff)
     net = Network(test_mps,mpo)
