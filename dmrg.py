@@ -333,11 +333,11 @@ class MPO():
         # first site (left)
         tmp = np.zeros([d,8,d])
         tmp[:,1,:] = J1 * Sz
-        tmp[:,2,:] = J1 * Sp
-        tmp[:,3,:] = J1 * Sm
+        tmp[:,2,:] = J1/2.0 * Sp
+        tmp[:,3,:] = J1/2.0 * Sm
         tmp[:,4,:] = J2 * Sz
-        tmp[:,5,:] = J2 * Sp
-        tmp[:,6,:] = J2 * Sm
+        tmp[:,5,:] = J2/2.0 * Sp
+        tmp[:,6,:] = J2/2.0 * Sm
         tmp[:,7,:] = one
         ret[0] = tmp
 
@@ -359,11 +359,11 @@ class MPO():
         tmp[:,2,:,5] = one
         tmp[:,3,:,6] = one
         tmp[:,1,:,7] = J1 * Sz
-        tmp[:,2,:,7] = J1 * Sp
-        tmp[:,3,:,7] = J1 * Sm
+        tmp[:,2,:,7] = J1/2.0 * Sp
+        tmp[:,3,:,7] = J1/2.0 * Sm
         tmp[:,4,:,7] = J2 * Sz
-        tmp[:,5,:,7] = J2 * Sp
-        tmp[:,6,:,7] = J2 * Sm
+        tmp[:,5,:,7] = J2/2.0 * Sp
+        tmp[:,6,:,7] = J2/2.0 * Sm
         tmp[:,7,:,7] = one
         for i in range(1,L-1):
             ret[i] = copy.deepcopy(tmp)
