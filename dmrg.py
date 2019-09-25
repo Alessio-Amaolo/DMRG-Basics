@@ -1,9 +1,11 @@
+from __future__ import print_function
 # TODO: test everything.
 # TODO: Determine whento use svd and when to use reduce_rank_svd
 
 import numpy as np
 import scipy.linalg
 import sys
+import copy
 
 class MPS():
     '''
@@ -32,6 +34,10 @@ class MPS():
         self.chi = chi
         assert self.length > 2, "Length cannot be shorter than 3."
         assert self.length < 46, "MPS cannot right normalize if length is > 45"
+        # ^^^ what prevents the MPS from being canonicalized if its length is
+        # larger than 45? If it is a computational problem, then there is likely
+        # a bug. If it is a hard-coded limit, then try to un-restrict that
+        # because a length of 45 is quite small for an MPS - MJO (9/24/19)
 
     def __str__(self):
         print(self.mps)
@@ -209,11 +215,176 @@ class MPS():
 
 
 
-# class MPO(MPS):
-#     def rightNormalize(self):
-#         pass
-#     def leftNormalize(self):
-#         pass
+class MPO():
+    '''
+    A class that will build an efficient MPO representation of some
+    simple Hamiltonians. The constructor should take the arguments "L" (length),
+    "Oi" (operator on site I), "Oj" (operator on site j), "H" (what
+    Hamiltonian to build), and "coeff" (an array of coefficients in the
+    Hamiltonian, unique for each possible "H").
+    For now, "H" will just include "NN" (nearest neighbor bosonic interactions),
+    "NNN" (next-nearest neighbor bosonic interactions), and
+    "exp" (exponentially decaying long-range bosonic interactions).
+
+    Returns an ndarray of length L, where each element is a 4-index tensor
+    corresponding to the index convention [up, right, down, left]
+    '''
+
+    def __init__(self, L, Oi, Oj, H, coeff):
+        assert isinstance(L,int)
+        self.L = L
+        d = Oi.shape[0]
+        assert (d,d) == Oi.shape
+        assert (d,d) == Oj.shape
+        self.Oi = Oi
+        self.Oj = Oj
+        self.d = d
+        if H not in ["NNN","NN","exp"]:
+            raise ValueError("we dont support this Hamiltonian yet")
+        self.Ham = H
+        self.coeff = coeff
+        if H == "NNN":
+            self.mpo, self.D = self.__gen_NNN(L, Oi, Oj, coeff)
+        elif H == "NN":
+            self.mpo, self.D = self.__gen_NN(L, Oi, Oj)
+        elif H == "exp":
+            self.mpo, self.D = self.__gen_exp(L, Oi, Oj, coeff)
+
+
+
+    '''
+    Private function to build the NNN MPO. "coeff" should contain a "J1" and a
+    "J2" parameter, following the conventions of the model:
+    H = J1 * \sum_{k} Oi_{k} Oj_{k+1} + J2 * \sum_{k} Oi_{k} Oj_{k+2}.
+    If you make J1 and J2 both negative, this defines a frustrated
+    antiferromagnatic problem with very interesting physical properties.
+    '''
+    def __gen_NNN(self, L, Oi, Oj, coeff):
+
+        assert len(coeff) == 2
+        J1 = coeff[0]
+        J2 = coeff[1]
+
+        d = Oi.shape[0]
+        one = np.eye(d)
+
+        ret = np.zeros(L,dtype=object)
+
+        # first site (left)
+        tmp = np.zeros([d,4,d])
+        tmp[:,1,:] = J1 * Oi
+        tmp[:,2,:] = J2 * Oi
+        tmp[:,3,:] = one
+        ret[0] = tmp
+
+        # last site (right)
+        tmp = np.zeros([d,d,4])
+        tmp[:,:,0] = one
+        tmp[:,:,1] = Oj
+        ret[-1] = tmp
+
+        # bulk sites
+        tmp = np.zeros([d,4,d,4])
+        tmp[:,0,:,0] = one
+        tmp[:,0,:,1] = Oj
+        tmp[:,1,:,2] = one
+        tmp[:,1,:,3] = J1 * Oi
+        tmp[:,2,:,3] = J2 * Oi
+        tmp[:,3,:,3] = one
+        for i in range(1,L-1):
+            ret[i] = copy.deepcopy(tmp)
+
+        return ret, 4
+
+
+    '''
+    Private function to build the NN MPO. "coeff" is irrelevant here. The model
+    is: H = \sum_{k} Oi_{k} Oj_{k+1}
+    '''
+    def __gen_NN(self, L, Oi, Oj):
+
+        d = Oi.shape[0]
+        one = np.eye(d)
+
+        ret = np.zeros(L,dtype=object)
+
+        # first site (left)
+        tmp = np.zeros([d,3,d])
+        tmp[:,1,:] = Oi
+        tmp[:,2,:] = one
+        ret[0] = tmp
+
+        # last site (right)
+        tmp = np.zeros([d,d,3])
+        tmp[:,:,0] = one
+        tmp[:,:,1] = Oj
+        ret[-1] = tmp
+
+        # bulk sites
+        tmp = np.zeros([d,3,d,3])
+        tmp[:,0,:,0] = one
+        tmp[:,0,:,1] = Oj
+        tmp[:,1,:,2] = Oi
+        tmp[:,2,:,2] = one
+        for i in range(1,L-1):
+            ret[i] = copy.deepcopy(tmp)
+
+        return ret, 3
+
+
+    '''
+    Private function to build the exp MPO. "coeff" should contain one parameter
+    "a" which is the exponential decay rate. The model is:
+    H = \sum_{k=1}^{L} \sum_{m=k+1}^{L} Oi_{k} Oj_{m} exp(-a * |m-k|)
+    '''
+    def __gen_exp(self, L, Oi, Oj, coeff):
+
+        assert len(coeff) == 1
+        a = coeff[0]
+
+        d = Oi.shape[0]
+        one = np.eye(d)
+
+        ret = np.zeros(L,dtype=object)
+
+        # first site (left)
+        tmp = np.zeros([d,3,d])
+        tmp[:,1,:] = Oi
+        tmp[:,2,:] = one
+        ret[0] = tmp
+
+        # last site (right)
+        tmp = np.zeros([d,d,3])
+        tmp[:,:,0] = one
+        tmp[:,:,1] = np.exp(-a) * Oj
+        ret[-1] = tmp
+
+        # bulk sites
+        tmp = np.zeros([d,3,d,3])
+        tmp[:,0,:,0] = one
+        tmp[:,0,:,1] = np.exp(-a) * Oj
+        tmp[:,1,:,1] = np.exp(-a) * one
+        tmp[:,1,:,2] = Oi
+        tmp[:,2,:,2] = one
+        for i in range(1,L-1):
+            ret[i] = copy.deepcopy(tmp)
+
+        return ret, 3
+
+
+
+    def get(self):
+        return(self.mpo)
+
+    def __getitem__(self, index):
+        return(self.mpo[index])
+
+    def __setitem__(self, index, value):
+        self.mpo[index] = value
+
+
+
+
 
 class Network():
     '''
@@ -375,6 +546,7 @@ class Network():
 
         return (self.state.get(), self.contract())
 
+
 def buildIsingMPS(L=10, chi=10):
     '''
     Build an example MPS with the transfer matrix used to solve the ising model.
@@ -390,6 +562,15 @@ def buildIsingMPS(L=10, chi=10):
     cornerTensor = np.einsum('rx, xD -> rD', G, G)
     edgeTensor = np.einsum('ux, Rx, xj -> uRj', G, G, G)
     return MPS((cornerTensor, edgeTensor, cornerTensor, L), chi)
+
+def buildFMmps(L=20):
+    Tbulk = np.zeros([2,1,1])
+    Tbulk[0,0,0] = 1.0
+
+    Tedge = np.zeros([2,1])
+    Tedge[0,0] = 1.0
+    return MPS((Tedge,Tbulk,Tedge,L),1)
+
 
 def buildExampleMPO(I=True, L=10, chi=10):
     '''
@@ -411,6 +592,28 @@ def FullTest():
     # Generate an example MPS
     L,chi = 10,10
     testFlag = True
+    print("\nTesting MPO initialization.")
+    Oi = np.eye(2)
+    Oi[1,1] = -1.0
+    Oj = copy.deepcopy(Oi)
+    coeff = None
+    test_mps = buildFMmps(L)
+    mpo = MPO(L,Oi,Oj,"NN",coeff)
+    net = Network(test_mps,mpo)
+    assert net.contract() == L-1
+    coeff = [1.0,0.5]
+    mpo = MPO(L,Oi,Oj,"NNN",coeff)
+    net = Network(test_mps,mpo)
+    assert net.contract() == coeff[0]*(L-1) + coeff[1]*(L-2)
+    coeff = [0.6]
+    mpo = MPO(L,Oi,Oj,"exp",coeff)
+    net = Network(test_mps,mpo)
+    val = 0.0
+    for i in range(L):
+        for j in range(i+1,L):
+            val += np.exp(-coeff[0] * (j-i))
+    assert net.contract() == val
+    print("Initialization of MPO did not return any errors.")
     print("Testing MPS initialization and full right normalization. ")
     mps = buildIsingMPS()
     print("Initialization of MPS successful. ")
@@ -468,9 +671,6 @@ def FullTest():
 
     testFlag = True
     mps = buildIsingMPS()
-    print("\nTesting MPO initialization.")
-    mpo = buildExampleMPO()
-    print("Initialization of MPO did not return any errors.")
     print("Initializing Network class with example MPS and MPO.")
     network = Network(mps, mpo)
 
@@ -513,4 +713,15 @@ def FullTest():
 
     return
 
-FullTest()
+
+if __name__ == "__main__":
+    FullTest()
+    # it is best to make this a python "file" rather than just a script, which
+    # is why I add the "if __name__ == "__main__"" statement. In this case,
+    # if you call "python dmrg.py" from the command line it will do whatever is
+    # contained down here. However, you could also write a different file
+    # "dmrg2.py" which does something else, and import this file just as you
+    # import numpy. If you try to do such a thing but you do not have a
+    # "if __name__ == "__main__"" statement, then it would run FullTest() every
+    # time you import it. You will notice this in a lot of python codes.
+    # -MJO (9/24/19)
