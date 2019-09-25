@@ -227,7 +227,8 @@ class MPO():
     "exp" (exponentially decaying long-range bosonic interactions).
 
     Returns an ndarray of length L, where each element is a 4-index tensor
-    corresponding to the index convention [up, right, down, left]
+    corresponding to the index convention [up, right, down, left]. The edges
+    are 3-index tensors with the appropriate left of right index removed.
     '''
 
     def __init__(self, L, Oi, Oj, H, coeff):
